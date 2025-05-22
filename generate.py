@@ -22,7 +22,8 @@ class DataProcessor:
 		self.sampling_rate = opt.sampling_rate
 		self.input_size = opt.input_size
 
-		self.fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, flip_input=False)
+		# Initialize face alignment with CPU
+		self.fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, flip_input=False, device='cpu')
 
 		# wav2vec2 audio preprocessor
 		self.wav2vec_preprocessor = Wav2Vec2FeatureExtractor.from_pretrained(opt.wav2vec_model_path, local_files_only=True)

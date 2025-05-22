@@ -1,9 +1,16 @@
-import folder_paths
 import os
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = '0.0'
+
+import folder_paths
 import comfy.model_management as mm
 import time
 import torchaudio
 import torchvision.utils as vutils
+import torch
+import numpy as np
+import comfy.utils
+import comfy.sd
 
 from .generate import InferenceAgent
 from .options.base_options import BaseOptionsJson
@@ -14,7 +21,7 @@ class LoadFloatModels:
         return {
             "required": {
                 "model": (['float.pth'],)
-            },
+            }
         }
 
     RETURN_TYPES = ("FLOAT_PIPE",)
@@ -36,9 +43,24 @@ class LoadFloatModels:
             from huggingface_hub import snapshot_download
             snapshot_download(repo_id="yuvraj108c/float", local_dir=float_models_dir, local_dir_use_symlinks=False)
 
+        # Load the model and convert to MPS
+        if os.path.exists(float_model_path):
+            # Load the model
+            model_data = comfy.utils.load_torch_file(float_model_path)
+            
+            # Convert model tensors to MPS
+            device = 'mps' if torch.backends.mps.is_available() else 'cpu'
+            for key in model_data:
+                if isinstance(model_data[key], torch.Tensor):
+                    model_data[key] = model_data[key].to(device)
+            
+            # Save the converted model
+            torch.save(model_data, float_model_path)
+
         # use custom dictionary instead of original parser for arguments
         opt = BaseOptionsJson
-        opt.rank, opt.ngpus  = 0,1
+        opt.rank = 'mps' if torch.backends.mps.is_available() else 'cpu'
+        opt.ngpus = 1
         opt.ckpt_path = float_model_path
         opt.pretrained_dir = float_models_dir
         opt.wav2vec_model_path = wav2vec2_base_960h_models_dir
@@ -62,7 +84,7 @@ class FloatProcess:
                 "emotion": (['none', 'angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise'], {"default": "none"}),
                 "crop": ("BOOLEAN",{"default":False},),
                 "seed": ("INT", {"default": 62064758300528, "min": 0, "max": 0xffffffffffffffff}),
-            },
+            }
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -77,7 +99,7 @@ class FloatProcess:
         os.makedirs(temp_dir, exist_ok=True)
         audio_save_path = os.path.join(temp_dir, f"{int(time.time())}.wav")
         torchaudio.save(audio_save_path, ref_audio['waveform'].squeeze(0), ref_audio["sample_rate"])
-
+        
         # save image
         if ref_image.shape[0] != 1:
             raise Exception("Only a single image is supported.")
@@ -85,21 +107,38 @@ class FloatProcess:
         image_save_path = os.path.join(temp_dir, f"{int(time.time())}.png")
         vutils.save_image(ref_image_bchw[0], image_save_path)
         
-        float_pipe.G.to(float_pipe.rank)
-
-        float_pipe.opt.fps = fps
-        images_bhwc = float_pipe.run_inference(
-            None,
-            image_save_path,
-            audio_save_path,
-            a_cfg_scale = a_cfg_scale,
-            r_cfg_scale = r_cfg_scale,
-            e_cfg_scale = e_cfg_scale,
-            emo 		= None if emotion == "none" else emotion,
-            no_crop 	= not crop,
-            seed 		= seed
-        )
-
-        float_pipe.G.to(mm.unet_offload_device())
+        # Move model to device only during inference
+        device = 'mps' if torch.backends.mps.is_available() else 'cpu'
+        float_pipe.G.to(device)
+        
+        try:
+            float_pipe.opt.fps = fps
+            images_bhwc = float_pipe.run_inference(
+                None,
+                image_save_path,
+                audio_save_path,
+                a_cfg_scale = a_cfg_scale,
+                r_cfg_scale = r_cfg_scale,
+                e_cfg_scale = e_cfg_scale,
+                emo 		= None if emotion == "none" else emotion,
+                no_crop 	= not crop,
+                seed 		= seed
+            )
+        finally:
+            # Always move model back to CPU after inference
+            float_pipe.G.to('cpu')
+            # Clear any cached memory
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
 
         return (images_bhwc,)
+
+NODE_CLASS_MAPPINGS = {
+    "LoadFloatModels": LoadFloatModels,
+    "FloatProcess": FloatProcess
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "LoadFloatModels": "Load FLOAT Models",
+    "FloatProcess": "FLOAT Process"
+}

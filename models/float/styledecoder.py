@@ -401,7 +401,7 @@ class ToFlow(nn.Module):
         xs = np.meshgrid(xs, xs)
         xs = np.stack(xs, 2)
 
-        xs = torch.tensor(xs, requires_grad=False).float().unsqueeze(0).repeat(input.size(0), 1, 1, 1).cuda()
+        xs = torch.tensor(xs, requires_grad=False).float().unsqueeze(0).repeat(input.size(0), 1, 1, 1).to(input.device)
 
         if skip is not None:
             skip = self.upsample(skip)
@@ -418,12 +418,16 @@ class ToFlow(nn.Module):
 class Direction(nn.Module):
     def __init__(self, motion_dim):
         super(Direction, self).__init__()
-
         self.weight = nn.Parameter(torch.randn(512, motion_dim))
 
     def forward(self, input):
         weight = self.weight + 1e-8
-        Q, R = torch.linalg.qr(weight)  # get eignvector, orthogonal [n1, n2, n3, n4]
+        # Move weight to CPU for QR decomposition
+        weight_cpu = weight.cpu()
+        Q, R = torch.linalg.qr(weight_cpu)  # get eignvector, orthogonal [n1, n2, n3, n4]
+        # Move back to original device
+        Q = Q.to(weight.device)
+        R = R.to(weight.device)
 
         if input is None:
             return Q
